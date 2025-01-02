@@ -1,7 +1,7 @@
 import logging
 import os
 import time
-from multiprocessing import Process, Queue
+from multiprocessing import Process, Queue, Value
 
 import numpy as np
 import torch
@@ -102,6 +102,7 @@ class BatchSampler(Process):
                     self.samples_per_file = self.chunk[0].shape[0]
                     num_samples = len(self.chunk) * self.samples_per_file
 
+                    # 生成待抽样的样本索引序列
                     if self.sampling == 'random':
                         sample_idx_list = list(np.random.permutation(num_samples)) * self.sample_repeat_rate
                         # sample_idx_list = np.array(
@@ -109,7 +110,8 @@ class BatchSampler(Process):
                         # ).reshape(-1).tolist()
                     else:
                         sample_idx_list = list(np.arange(num_samples)) * self.sample_repeat_rate
-                    truncated_length = (len(sample_idx_list) // self.batch_size) * self.batch_size  # 可被整除的长度
+                    # 可被 batch_size 整除的长度，丢弃尾部不足 batch_size 的一个batch
+                    truncated_length = (len(sample_idx_list) // self.batch_size) * self.batch_size
                     self.batch_indices_list = [sample_idx_list[i:i + self.batch_size] for i in
                                                range(0, truncated_length, self.batch_size)]
 
@@ -123,28 +125,19 @@ class NpzReader(Process):
     def __init__(self,
                  npz_files,
                  npz_queue,
+                 counter,
                  ):
         super(NpzReader, self).__init__()
         self.npz_files = npz_files
         self.npz_read_idx = 0
         self.npz_queue = npz_queue
-        self.generation_counter = 0
-        self.start_time = time.time()
+        self.generation_counter = counter
         self.logger = logging.getLogger(__name__)
 
     def _load_npz_file(self, file_path):
         data = np.load(file_path)
         # logging.debug(f'loaded file {file_path}')
         return data['samples']
-
-    def get_rate(self, reset=True):
-        total_time = time.time() - self.start_time
-        generation_rate = self.generation_counter / total_time
-        # self.logger.debug(f'generation_rate = {generation_rate}')
-        if reset:
-            self.generation_counter = 0
-            self.start_time = time.time()
-        return generation_rate
 
     def run(self):
         while True:
@@ -157,32 +150,48 @@ class NpzReader(Process):
 
                 samples = self._load_npz_file(self.npz_files[self.npz_read_idx])
                 self.npz_queue.put(samples)
-                self.generation_counter += samples.shape[0]
+                self.generation_counter.add(samples.shape[0])
                 self.npz_read_idx += 1
+
+
+class Counter:
+    def __init__(self, init_value=0):
+        self.value = Value('L', init_value)  # 创建一个 unsigned long 共享整数，初始值为 0
+
+    def add(self, num):
+        with self.value.get_lock():
+            self.value.value += num
+
+    def reset(self):
+        with self.value.get_lock():
+            self.value.value = 0
+
+    def get(self):
+        return self.value.value
 
 
 class HoK3v3Dataset:
     def __init__(self,
                  root_dir,
-                 batch_size=256,
+                 batch_size=32,
                  sampling='random',
                  sample_repeat_rate=1,
-                 chunk_size=5,
+                 chunk_size=2,
                  batch_queue_size=20,
                  npz_queue_size=10,
                  num_sampler=2,
                  num_reader=2,
                  ):
         """
-        采用了流水线的方式读取数据集中的样本，并生成 batch。
+        采用流水线的方式读取数据集中的样本，并生成 batch。
         npz_queue 表示存放 npz 文件中的 samples 的队列，进程安全。
-        batch_queue 是存放用于训练的batch的队列，进程安全。
+        batch_queue 是存放用于训练的 batch 的队列，进程安全。
         1. NpzReader 负责预取 npz 文件中的 samples 放入 npz_queue。
-            当 npz_queue 不满时，NpzReader 负责不停的读取 npz 文件中的samples 放入npz_queue。
-        2. BatchSampler 负责预取batch放入batch_queue，
-            具体为：
-                当 batch_queue 不满时，BatchSampler 先从npz_queue读取一个 chunk，
-                然后从 chunk 中不断的抽样batch，放入batch_queue中。
+            当 npz_queue 不满时，NpzReader 负责不停的读取 npz 文件中的samples 放入 npz_queue。
+        2. BatchSampler 负责预取 batch 放入 batch_queue，
+            batch_queue 不满时，BatchSampler 先从 npz_queue 读取一个 chunk，
+            然后从 chunk 中不断的抽样 batch，放入 batch_queue 中。
+
         Args:
             root_dir: 指定数据集所在目录，绝对路径
             batch_size: 抽样的批次大小
@@ -199,6 +208,8 @@ class HoK3v3Dataset:
         self.batch_size = batch_size
         self.single_frame = root_dir.endswith('frames')
         self.logger = logging.getLogger(__name__)
+        self.consumption_counter = 0
+        self.generation_counter = Counter(0)
 
         self.batch_queue_size = batch_queue_size
         self.npz_queue_size = npz_queue_size
@@ -218,9 +229,9 @@ class HoK3v3Dataset:
         npz_chunks = np.array_split(self.npz_files, num_reader)
         self.npz_readers = [NpzReader(npz_chunks[i],
                                       self.npz_queue,
+                                      self.generation_counter
                                       ) for i in range(num_reader)]
         self._initialize()
-        self.consumption_counter = 0
         self.start_time = time.time()
 
     def _initialize(self):
@@ -230,25 +241,32 @@ class HoK3v3Dataset:
         for p in self.batch_samplers:
             p.daemon = True  # 设置为守护进程
             p.start()
+        self.logger.debug("stared npz_readers and batch_samplers.")
 
-        while self.batch_queue.qsize() <= 1:
-            time.sleep(5)
-            self.logger.debug("initializing, "
-                              f"batch_queue.qsize() = {self.batch_queue.qsize()}, "
-                              f"npz_queue.qsize() = {self.npz_queue.qsize()}")
+        # while self.batch_queue.qsize() <= 1:
+        #     time.sleep(5)
+        #     self.logger.debug("initializing, "
+        #                       f"batch_queue.qsize() = {self.batch_queue.qsize()}, "
+        #                       f"npz_queue.qsize() = {self.npz_queue.qsize()}")
 
     def get_next_batch(self):
+        if self.batch_queue.qsize() == 0:
+            self.logger.debug("The batch queue is empty. Wait for a batch to be generated. "
+                              f"batch_queue.qsize() = {self.batch_queue.qsize()}, "
+                              f"npz_queue.qsize() = {self.npz_queue.qsize()}.")
+
         batch_data = self.batch_queue.get()
         self.consumption_counter += batch_data.shape[0]
         return _format_frame_x1_data(batch_data) if self.single_frame else _format_frame_x16_data(batch_data)
 
     def get_rate(self, reset=True):
         total_time = time.time() - self.start_time
-        generation_rate = sum([p.get_rate() for p in self.npz_readers])
+        generation_rate = self.generation_counter.get() / total_time
         consumption_rate = self.consumption_counter / total_time
         # self.logger.debug(f'G rate = {generation_rate}, C rate = {consumption_rate}')
         if reset:
             self.consumption_counter = 0
+            self.generation_counter.reset()
             self.start_time = time.time()
         return generation_rate, consumption_rate
 
@@ -261,19 +279,19 @@ if __name__ == "__main__":
     )
 
     data_dir = os.path.join('/mnt/storage/yxh/match24/lightweight/my_aiarena', 'dataset', 'train_with_logits')
-    mem_buffer = HoK3v3Dataset(root_dir=data_dir,
+    dataset = HoK3v3Dataset(root_dir=data_dir,
                                batch_size=32,
                                sample_repeat_rate=1,
                                )
 
     for i in range(1000000):
         start_time = time.time()
-        state, action_label, action_logits = mem_buffer.get_next_batch()
+        state, action_label, action_logits = dataset.get_next_batch()
         logging.debug(
             f"get batch {i}, "
-            f"batch_queue len = {mem_buffer.batch_queue.qsize()}, "
-            f"npz_queue len = {mem_buffer.npz_queue.qsize()}")
+            f"batch_queue len = {dataset.batch_queue.qsize()}, "
+            f"npz_queue len = {dataset.npz_queue.qsize()}")
         if i % 10 == 0:
-            generation_rate, consumption_rate = mem_buffer.get_rate()
+            generation_rate, consumption_rate = dataset.get_rate()
             logging.debug(f'G rate = {generation_rate}, C rate = {consumption_rate}')
         logging.debug(f"step time = {time.time() - start_time}")
