@@ -8,51 +8,76 @@ import torch
 
 
 def _format_frame_x1_data(batch_data):
-    batch = torch.from_numpy(batch_data)  # (bs, 3, 4921)
-    batch = batch.permute(1, 0, 2)  # (3, bs, 4921)
-    action_dims = sum([13, 25, 42, 42, 39])
-    state, leagal_action, reward, advantage, action_label, action_logits, is_train, sub_action_mask = \
-        batch.split([4586, action_dims, 1, 1, 5, action_dims, 1, 5], dim=-1)
+    """
+    Formats batch data into state, action labels, and action logits.
+
+    Args:
+        batch_data (numpy.ndarray): Input data with shape (bs, 3, 4921).
+
+    Returns:
+        tuple: state, action_label, action_logits tensors.
+    """
+    # Convert numpy array to PyTorch tensor and rearrange dimensions
+    batch = torch.from_numpy(batch_data).permute(1, 0, 2)  # Shape: (3, bs, 4921)
+
+    # Define dimensions for splitting
+    action_dims = sum([13, 25, 42, 42, 39])  # Total action dimensions: 161
+    split_dims = [4586, action_dims, 1, 1, 5, action_dims, 1, 5]
+
+    # Split batch into components
+    (
+        state,  # (3, bs, 4586)
+        legal_action,
+        reward,
+        advantage,
+        action_label,  # (3, bs, 5)
+        action_logits,  # (3, bs, 161)
+        is_train,
+        sub_action_mask,
+    ) = batch.split(split_dims, dim=-1)
+
+    # Return the necessary components
     return state, action_label, action_logits
 
 
-def _format_frame_x16_data(batch_data):  # ([bs, 242352])  batch_size = -1
-    datas = torch.from_numpy(batch_data)  # ([bs, 242352])
-    datas = datas.view(-1, 3, 80784)  # ([bs, 3, 80784])
-    datas = datas.permute(1, 0, 2)  # ([3, bs, 80784])
+def _format_frame_x16_data(batch_data):
+    """
+    Formats batch data into state, action labels, and action logits for model input.
 
-    hero_sequence_data_split_shape = [78736, 1024, 1024]  # [78736, 1024, 1024]
-    batch, _, _ = datas.split(hero_sequence_data_split_shape, dim=-1)  # ([3, bs, 78736])
-    batch = batch.view(3, -1, 16, 4921)
-    batch = batch.reshape(3, -1, 4921)
+    Args:
+        batch_data (numpy.ndarray): Input data with shape ([bs, 242352]).
 
-    action_dims = sum([13, 25, 42, 42, 39])
-    state, leagal_action, reward, advantage, action_label, action_logits, is_train, sub_action_mask = \
-        batch.split([4586, action_dims, 1, 1, 5, action_dims, 1, 5], dim=-1)
-    state = state.reshape(3, -1, 4586)
-    action_label = action_label.reshape(3, -1, 5)
-    action_logits = action_logits.reshape(3, -1, action_dims)
+    Returns:
+        tuple: state, action_label, action_logits tensors.
+    """
+    # Convert numpy array to PyTorch tensor and reshape to [bs, 3, 80784]
+    datas = torch.from_numpy(batch_data).view(-1, 3, 80784).permute(1, 0, 2)  # [3, bs, 80784]
+
+    # Split hero sequence data into three parts: [78736, 1024, 1024]
+    # [3, bs, 16, 4921], 16 consecutive frames
+    batch = datas.split([78736, 1024, 1024], dim=-1)[0].view(3, -1, 16, 4921)
+
+    # Reshape batch for further processing
+    batch = batch.reshape(3, -1, 4921)  # [3, bs * 16, 4921]
+
+    # Define dimensions for splitting
+    action_dims = sum([13, 25, 42, 42, 39])  # Total action dimensions: 161
+    split_dims = [4586, action_dims, 1, 1, 5, action_dims, 1, 5]
+
+    # Split batch into components
+    (
+        state,  # (3, bs, 4586)
+        legal_action,
+        reward,
+        advantage,
+        action_label,  # (3, bs, 5)
+        action_logits,  # (3, bs, 161)
+        is_train,
+        sub_action_mask,
+    ) = batch.split(split_dims, dim=-1)
+
+    # Return the necessary components
     return state, action_label, action_logits
-
-
-# # 从 block_buff 中取一个batch的数据
-# def _fetch_batch(chunk, indices, samples_per_file):
-#     new_batch = []
-#     for idx in indices:
-#         block_idx = idx // samples_per_file
-#         sample_idx = idx % samples_per_file
-#         new_batch.append(chunk[block_idx][sample_idx: sample_idx + 1])
-#     logging.debug(f'fetched new batch, len = {len(new_batch)}')
-#     return np.concatenate(new_batch, axis=0)
-#
-#
-# # 从 prefetch_file_queue 中取一个 chunk
-# def _fetch_block(prefetch_file_queue, num_files):
-#     new_block = []
-#     for idx in range(num_files):
-#         new_block.append(prefetch_file_queue.popleft())
-#     logging.debug(f'fetched new chunk, len = {len(new_block)}')
-#     return new_block
 
 
 class BatchSampler(Process):
@@ -104,10 +129,8 @@ class BatchSampler(Process):
 
                     # 生成待抽样的样本索引序列
                     if self.sampling == 'random':
+                        # 首尾相接，连接若干次
                         sample_idx_list = list(np.random.permutation(num_samples)) * self.sample_repeat_rate
-                        # sample_idx_list = np.array(
-                        #     [np.random.permutation(num_samples) for _ in range(self.sample_repeat_rate)]
-                        # ).reshape(-1).tolist()
                     else:
                         sample_idx_list = list(np.arange(num_samples)) * self.sample_repeat_rate
                     # 可被 batch_size 整除的长度，丢弃尾部不足 batch_size 的一个batch
@@ -263,7 +286,8 @@ class HoK3v3Dataset:
         total_time = time.time() - self.start_time
         generation_rate = self.generation_counter.get() / total_time
         consumption_rate = self.consumption_counter / total_time
-        # self.logger.debug(f'G rate = {generation_rate}, C rate = {consumption_rate}')
+        if not self.single_frame:
+            generation_rate, consumption_rate = generation_rate * 16, consumption_rate * 16
         if reset:
             self.consumption_counter = 0
             self.generation_counter.reset()
@@ -280,13 +304,19 @@ if __name__ == "__main__":
 
     data_dir = os.path.join('/mnt/storage/yxh/match24/lightweight/my_aiarena', 'dataset', 'train_with_logits')
     dataset = HoK3v3Dataset(root_dir=data_dir,
-                               batch_size=32,
-                               sample_repeat_rate=1,
-                               )
+                            batch_size=256,
+                            sampling='random',
+                            sample_repeat_rate=1,
+                            chunk_size=10,
+                            batch_queue_size=20,
+                            npz_queue_size=10,
+                            num_sampler=2,
+                            num_reader=2
+                            )
 
     for i in range(1000000):
         start_time = time.time()
-        state, action_label, action_logits = dataset.get_next_batch()
+        dataset.get_next_batch()
         logging.debug(
             f"get batch {i}, "
             f"batch_queue len = {dataset.batch_queue.qsize()}, "
