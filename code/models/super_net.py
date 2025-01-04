@@ -9,96 +9,6 @@ from helper.util import make_mlp_layer, make_linear_layer, make_action_heads
 class NetworkModel(nn.Module):
     def __init__(self, arch_config):
         super(NetworkModel, self).__init__()
-        self.logger = logging.getLogger(__name__)
-
-        # hero number
-        self.hero_num = 3
-
-        # self.logger.info("model file: %s" % __name__)
-        self.logger.info("model file: {}".format(__name__))
-
-        # self.token_dim = 224
-        # self.target_attn_dim = 128
-        #
-        # # build network
-        # self.conv_layers = nn.Sequential(
-        #     nn.Conv2d(6, 18, 5, 1, 2),
-        #     nn.ReLU(),
-        #     nn.MaxPool2d(3, 2),
-        #     nn.Conv2d(18, 12, 3, 1, 1),
-        #     nn.MaxPool2d(2)
-        # )  # 192
-        # self.img_mlp = nn.Sequential(
-        #     nn.Linear(768, 512),
-        #     nn.ELU(),
-        #     nn.Linear(512, 256),
-        # )
-        # # self.hero_share_mlp = nn.Sequential(
-        # #     nn.Linear(251, 256),
-        # #     nn.ReLU(),
-        # # )
-        # self.hero_frd_mlp = nn.Linear(256, self.token_dim)
-        # self.hero_emy_mlp = nn.Linear(256, self.token_dim)
-        # self.public_info_mlp = nn.Sequential(
-        #     nn.Linear(44, 128),
-        #     nn.ReLU(),
-        #     nn.Linear(128, self.token_dim)
-        # )
-        # # self.soldier_share_mlp = nn.Sequential(
-        # #     nn.Linear(25, 128),
-        # #     nn.ReLU(),
-        # # )
-        # self.soldier_frd_mlp = nn.Linear(128, self.token_dim)
-        # self.soldier_emy_mlp = nn.Linear(128, self.token_dim)
-        # # self.organ_share_mlp = nn.Sequential(
-        # #     nn.Linear(29, 128),
-        # #     nn.ReLU(),
-        # # )
-        # self.organ_frd_mlp = nn.Linear(128, self.token_dim)
-        # self.organ_emy_mlp = nn.Linear(128, self.token_dim)
-        # self.monster_mlp = nn.Sequential(
-        #     nn.Linear(28, 128),
-        #     nn.ReLU(),
-        #     nn.Linear(128, self.token_dim)
-        # )
-        # self.global_mlp = nn.Sequential(
-        #     nn.Linear(68, 128),
-        #     nn.ReLU(),
-        #     nn.Linear(128, self.token_dim)
-        # )
-        # self.concat_mlp = nn.Sequential(
-        #     nn.Linear(1344, 2048),
-        #     nn.ReLU(),
-        #     nn.Linear(2048, 768),
-        #     nn.ReLU(),
-        #     nn.Linear(768, 512),
-        #     nn.ReLU(),
-        #     nn.Linear(512, 512),
-        #     nn.ReLU()
-        # )
-        # self.communicate_mlp = nn.Sequential(
-        #     nn.Linear(512, 2048),
-        #     nn.ReLU(),
-        #     nn.Linear(2048, 1024),
-        #     nn.ReLU(),
-        #     nn.Linear(1024, 512),
-        #     nn.ReLU()
-        # )
-        # self.action_heads = nn.ModuleList()
-        # for action_dim in (13, 25, 42, 42):
-        #     self.action_heads.append(
-        #         nn.Sequential(
-        #             nn.Linear(512, 256),
-        #             nn.ReLU(),
-        #             nn.Linear(256, action_dim)
-        #         )
-        #     )
-        # self.target_embed = nn.Linear(self.token_dim, self.target_attn_dim)
-        # self.target_head = nn.Sequential(
-        #     nn.Linear(512, 256),
-        #     nn.ReLU(),
-        #     nn.Linear(256, self.target_attn_dim)
-        # )
 
         for k, v in arch_config.items():
             setattr(self, k, v)
@@ -173,22 +83,28 @@ class NetworkModel(nn.Module):
                  global_hidden], dim=1)
             concat_hidden = self.concat_mlp(concat_hidden)
 
-            concat_hidden_split = concat_hidden.split((128, 384), dim=1)
+            first_size = concat_hidden.size(1) // 4
+            second_size = concat_hidden.size(1) // 4 * 3
+            concat_hidden_split = concat_hidden.split((first_size, second_size), dim=1)
             hero_public_first_result_list.append(concat_hidden_split[0])
             hero_public_second_result_list.append(concat_hidden_split[1])
 
         pool_hero_public, _ = torch.stack(hero_public_first_result_list, dim=1).max(dim=1)
 
-        for hero_index in range(self.hero_num):
+        for hero_index in range(3):
             hero_result_list = []
             fc_public_result = torch.cat([pool_hero_public, hero_public_second_result_list[hero_index]], dim=1)
-            communication_result = self.communicate_mlp(fc_public_result)
+            if hasattr(self, 'communicate_mlp'):
+                communication_result = self.communicate_mlp(fc_public_result)
+            else:
+                communication_result = fc_public_result
             # 4 action head
             for action_head in self.action_heads:
                 hero_result_list.append(action_head(communication_result))
             # target head
             target_embedding = self.target_embed(all_hero_target_list[hero_index])  # bs*39*target_attn_dim
-            target_key = self.target_head(communication_result).reshape((-1, self.target_attn_dim, 1))  # bs*target_attn_dim*1
+            target_key = self.target_head(communication_result).reshape(
+                (-1, self.target_attn_dim, 1))  # bs*target_attn_dim*1
             target_logits = torch.matmul(target_embedding, target_key).reshape((-1, 39))  # bs*39
             hero_result_list.append(target_logits)
 
@@ -226,9 +142,268 @@ def make_super_net():
         'concat_mlp': make_mlp_layer([2528, 4096, 2048, 1024, 1024, 512]),
         'communicate_mlp': make_mlp_layer([512, 1024, 1024, 512]),
         # 4 action head
-        'action_heads': make_action_heads((13, 25, 42, 42), [512, 256]),
+        'action_heads': make_action_heads([512, 256], (13, 25, 42, 42)),
         # target head
         'target_head': make_mlp_layer([512, 256, target_attn_dim]),
+        'target_embed': make_linear_layer(token_dim, target_attn_dim),
+    }
+    return NetworkModel(arch_config)
+
+
+def super_net_x30p():
+    token_dim = 224
+    target_attn_dim = 128
+    arch_config = {
+        'token_dim': token_dim,
+        'target_attn_dim': target_attn_dim,
+        # 特征处理
+        # image like feature
+        'conv_layers': nn.Sequential(
+            nn.Conv2d(6, 18, 3, 1, 1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(18, 12, 3, 1, 1),
+        ),  # (12, 8, 8)
+        'img_mlp': make_mlp_layer([768, 768, 512]),
+        'hero_frd_mlp': make_mlp_layer([251, 1024, token_dim]),  # 我方英雄
+        'hero_emy_mlp': make_mlp_layer([251, 1024, token_dim]),  # 敌方英雄
+        'public_info_mlp': make_mlp_layer([44, 256, token_dim]),  # 主英雄
+        'soldier_frd_mlp': make_mlp_layer([25, 256, token_dim]),  # 我方小兵
+        'soldier_emy_mlp': make_mlp_layer([25, 256, token_dim]),  # 敌方小兵
+        'organ_frd_mlp': make_mlp_layer([29, 256, token_dim]),  # 我方防御塔
+        'organ_emy_mlp': make_mlp_layer([29, 256, token_dim]),  # 敌方防御塔
+        'monster_mlp': make_mlp_layer([28, 256, token_dim]),  # 野怪
+        'global_mlp': make_mlp_layer([68, 256, token_dim]),  # 计分板信息
+        # 拼接特征，联合处理
+        # 512 + token_dim*9
+        'concat_mlp': make_mlp_layer([512 + token_dim * 9, 4096, 2048, 1024, 1024, 512]),
+        'communicate_mlp': make_mlp_layer([512, 1024, 1024, 512]),
+        # 4 action head
+        'action_heads': make_action_heads([512, 256], (13, 25, 42, 42)),
+        # target head
+        'target_head': make_mlp_layer([512, 256, target_attn_dim]),
+        'target_embed': make_linear_layer(token_dim, target_attn_dim),
+    }
+    return NetworkModel(arch_config)
+
+
+def super_net_x20p():
+    token_dim = 128
+    target_attn_dim = 128
+    arch_config = {
+        'token_dim': token_dim,
+        'target_attn_dim': target_attn_dim,
+        # 特征处理
+        # image like feature
+        'conv_layers': nn.Sequential(
+            nn.Conv2d(6, 18, 3, 1, 1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(18, 12, 3, 1, 1),
+        ),  # (12, 8, 8)
+        'img_mlp': make_mlp_layer([768, 512]),
+        'hero_frd_mlp': make_mlp_layer([251, 512, token_dim]),  # 我方英雄
+        'hero_emy_mlp': make_mlp_layer([251, 512, token_dim]),  # 敌方英雄
+        'public_info_mlp': make_mlp_layer([44, 256, token_dim]),  # 主英雄
+        'soldier_frd_mlp': make_mlp_layer([25, 256, token_dim]),  # 我方小兵
+        'soldier_emy_mlp': make_mlp_layer([25, 256, token_dim]),  # 敌方小兵
+        'organ_frd_mlp': make_mlp_layer([29, 256, token_dim]),  # 我方防御塔
+        'organ_emy_mlp': make_mlp_layer([29, 256, token_dim]),  # 敌方防御塔
+        'monster_mlp': make_mlp_layer([28, 256, token_dim]),  # 野怪
+        'global_mlp': make_mlp_layer([68, 256, token_dim]),  # 计分板信息
+        # 拼接特征，联合处理
+        # 512 + token_dim*9
+        'concat_mlp': make_mlp_layer([512 + token_dim * 9, 4096, 1300, 1024, 1024, 512]),
+        'communicate_mlp': make_mlp_layer([512, 1024, 1024, 512]),
+        # 4 action head
+        'action_heads': make_action_heads([512, 256], (13, 25, 42, 42)),
+        # target head
+        'target_head': make_mlp_layer([512, 256, target_attn_dim]),
+        'target_embed': make_linear_layer(token_dim, target_attn_dim),
+    }
+    return NetworkModel(arch_config)
+
+
+def super_net_x10p():
+    token_dim = 128
+    target_attn_dim = 128
+    arch_config = {
+        'token_dim': token_dim,
+        'target_attn_dim': target_attn_dim,
+        # 特征处理
+        # image like feature
+        'conv_layers': nn.Sequential(
+            nn.Conv2d(6, 18, 3, 1, 1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(18, 12, 3, 1, 1),
+        ),  # (12, 8, 8)
+        'img_mlp': make_mlp_layer([768, 256]),
+        'hero_frd_mlp': make_mlp_layer([251, 128, token_dim]),  # 我方英雄
+        'hero_emy_mlp': make_mlp_layer([251, 128, token_dim]),  # 敌方英雄
+        'public_info_mlp': make_mlp_layer([44, 128, token_dim]),  # 主英雄
+        'soldier_frd_mlp': make_mlp_layer([25, 128, token_dim]),  # 我方小兵
+        'soldier_emy_mlp': make_mlp_layer([25, 128, token_dim]),  # 敌方小兵
+        'organ_frd_mlp': make_mlp_layer([29, 128, token_dim]),  # 我方防御塔
+        'organ_emy_mlp': make_mlp_layer([29, 128, token_dim]),  # 敌方防御塔
+        'monster_mlp': make_mlp_layer([28, 128, token_dim]),  # 野怪
+        'global_mlp': make_mlp_layer([68, 128, token_dim]),  # 计分板信息
+        # 拼接特征，联合处理
+        # 512 + token_dim*9
+        'concat_mlp': make_mlp_layer([256 + token_dim * 9, 3072, 1024, 512]),
+        # 'communicate_mlp': make_mlp_layer([512, 512]),
+        # 4 action head
+        'action_heads': make_action_heads([512, 256], (13, 25, 42, 42)),
+        # target head
+        'target_head': make_mlp_layer([512, 256, target_attn_dim]),
+        'target_embed': make_linear_layer(token_dim, target_attn_dim),
+    }
+    return NetworkModel(arch_config)
+
+
+def super_net_x8p():
+    token_dim = 128
+    target_attn_dim = 128
+    arch_config = {
+        'token_dim': token_dim,
+        'target_attn_dim': target_attn_dim,
+        # 特征处理
+        # image like feature
+        'conv_layers': nn.Sequential(
+            nn.Conv2d(6, 18, 3, 1, 1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(18, 12, 3, 1, 1),
+        ),  # (12, 8, 8)
+        'img_mlp': make_mlp_layer([768, 256]),
+        'hero_frd_mlp': make_mlp_layer([251, 128, token_dim]),  # 我方英雄
+        'hero_emy_mlp': make_mlp_layer([251, 128, token_dim]),  # 敌方英雄
+        'public_info_mlp': make_mlp_layer([44, 128, token_dim]),  # 主英雄
+        'soldier_frd_mlp': make_mlp_layer([25, 128, token_dim]),  # 我方小兵
+        'soldier_emy_mlp': make_mlp_layer([25, 128, token_dim]),  # 敌方小兵
+        'organ_frd_mlp': make_mlp_layer([29, 128, token_dim]),  # 我方防御塔
+        'organ_emy_mlp': make_mlp_layer([29, 128, token_dim]),  # 敌方防御塔
+        'monster_mlp': make_mlp_layer([28, 128, token_dim]),  # 野怪
+        'global_mlp': make_mlp_layer([68, 128, token_dim]),  # 计分板信息
+        # 拼接特征，联合处理
+        # 512 + token_dim*9
+        'concat_mlp': make_mlp_layer([256 + token_dim * 9, 2300, 1024, 512]),
+        # 'communicate_mlp': make_mlp_layer([512, 512]),
+        # 4 action head
+        'action_heads': make_action_heads([512, 128], (13, 25, 42, 42)),
+        # target head
+        'target_head': make_mlp_layer([512, 128, target_attn_dim]),
+        'target_embed': make_linear_layer(token_dim, target_attn_dim),
+    }
+    return NetworkModel(arch_config)
+
+
+def super_net_x6p():
+    token_dim = 96
+    target_attn_dim = 96
+    arch_config = {
+        'token_dim': token_dim,
+        'target_attn_dim': target_attn_dim,
+        # 特征处理
+        # image like feature
+        'conv_layers': nn.Sequential(
+            nn.Conv2d(6, 18, 3, 1, 1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(18, 12, 3, 1, 1),
+        ),  # (12, 8, 8)
+        'img_mlp': make_mlp_layer([768, 256]),
+        'hero_frd_mlp': make_mlp_layer([251, 128, token_dim]),  # 我方英雄
+        'hero_emy_mlp': make_mlp_layer([251, 128, token_dim]),  # 敌方英雄
+        'public_info_mlp': make_mlp_layer([44, 128, token_dim]),  # 主英雄
+        'soldier_frd_mlp': make_mlp_layer([25, 128, token_dim]),  # 我方小兵
+        'soldier_emy_mlp': make_mlp_layer([25, 128, token_dim]),  # 敌方小兵
+        'organ_frd_mlp': make_mlp_layer([29, 128, token_dim]),  # 我方防御塔
+        'organ_emy_mlp': make_mlp_layer([29, 128, token_dim]),  # 敌方防御塔
+        'monster_mlp': make_mlp_layer([28, 128, token_dim]),  # 野怪
+        'global_mlp': make_mlp_layer([68, 128, token_dim]),  # 计分板信息
+        # 拼接特征，联合处理
+        # 512 + token_dim*9
+        'concat_mlp': make_mlp_layer([256 + token_dim * 9, 2048, 1024, 256]),
+        # 'communicate_mlp': make_mlp_layer([512, 512]),
+        # 4 action head
+        'action_heads': make_action_heads([256, 128], (13, 25, 42, 42)),
+        # target head
+        'target_head': make_mlp_layer([256, 128, target_attn_dim]),
+        'target_embed': make_linear_layer(token_dim, target_attn_dim),
+    }
+    return NetworkModel(arch_config)
+
+
+def super_net_x4p():
+    token_dim = 96
+    target_attn_dim = 96
+    arch_config = {
+        'token_dim': token_dim,
+        'target_attn_dim': target_attn_dim,
+        # 特征处理
+        # image like feature
+        'conv_layers': nn.Sequential(
+            nn.Conv2d(6, 18, 3, 1, 1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(18, 12, 3, 1, 1),
+        ),  # (12, 8, 8)
+        'img_mlp': make_mlp_layer([768, 128]),
+        'hero_frd_mlp': make_mlp_layer([251, 128, token_dim]),  # 我方英雄
+        'hero_emy_mlp': make_mlp_layer([251, 128, token_dim]),  # 敌方英雄
+        'public_info_mlp': make_mlp_layer([44, 128, token_dim]),  # 主英雄
+        'soldier_frd_mlp': make_mlp_layer([25, 128, token_dim]),  # 我方小兵
+        'soldier_emy_mlp': make_mlp_layer([25, 128, token_dim]),  # 敌方小兵
+        'organ_frd_mlp': make_mlp_layer([29, 128, token_dim]),  # 我方防御塔
+        'organ_emy_mlp': make_mlp_layer([29, 128, token_dim]),  # 敌方防御塔
+        'monster_mlp': make_mlp_layer([28, 128, token_dim]),  # 野怪
+        'global_mlp': make_mlp_layer([68, 128, token_dim]),  # 计分板信息
+        # 拼接特征，联合处理
+        # 512 + token_dim*9
+        'concat_mlp': make_mlp_layer([128 + token_dim * 9, 1536, 512, 256]),
+        # 'communicate_mlp': make_mlp_layer([512, 512]),
+        # 4 action head
+        'action_heads': make_action_heads([256, 128], (13, 25, 42, 42)),
+        # target head
+        'target_head': make_mlp_layer([256, 128, target_attn_dim]),
+        'target_embed': make_linear_layer(token_dim, target_attn_dim),
+    }
+    return NetworkModel(arch_config)
+
+
+def super_net_x2p():
+    token_dim = 64
+    target_attn_dim = 64
+    arch_config = {
+        'token_dim': token_dim,
+        'target_attn_dim': target_attn_dim,
+        # 特征处理
+        # image like feature
+        'conv_layers': nn.Sequential(
+            nn.Conv2d(6, 18, 3, 1, 1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(18, 12, 3, 1, 1),
+        ),  # (12, 8, 8)
+        'img_mlp': make_mlp_layer([768, 128]),
+        'hero_frd_mlp': make_mlp_layer([251, 128, token_dim]),  # 我方英雄
+        'hero_emy_mlp': make_mlp_layer([251, 128, token_dim]),  # 敌方英雄
+        'public_info_mlp': make_mlp_layer([44, 96, token_dim]),  # 主英雄
+        'soldier_frd_mlp': make_mlp_layer([25, 96, token_dim]),  # 我方小兵
+        'soldier_emy_mlp': make_mlp_layer([25, 96, token_dim]),  # 敌方小兵
+        'organ_frd_mlp': make_mlp_layer([29, 96, token_dim]),  # 我方防御塔
+        'organ_emy_mlp': make_mlp_layer([29, 96, token_dim]),  # 敌方防御塔
+        'monster_mlp': make_mlp_layer([28, 96, token_dim]),  # 野怪
+        'global_mlp': make_mlp_layer([68, 96, token_dim]),  # 计分板信息
+        # 拼接特征，联合处理
+        # 512 + token_dim*9
+        'concat_mlp': make_mlp_layer([128 + token_dim * 9, 800, 256]),
+        # 'communicate_mlp': make_mlp_layer([512, 512]),
+        # 4 action head
+        'action_heads': make_action_heads([256, 96], (13, 25, 42, 42)),
+        # target head
+        'target_head': make_mlp_layer([256, 96, target_attn_dim]),
         'target_embed': make_linear_layer(token_dim, target_attn_dim),
     }
     return NetworkModel(arch_config)

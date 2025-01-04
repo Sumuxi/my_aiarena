@@ -1,16 +1,16 @@
-# from .arch_mlp import arch_mlp_flop_x10p, arch_mlp_flop_x20p, arch_mlp_flop_x30p, arch_mlp_flop_x40p, \
-#     arch_mlp_flop_x60p, arch_mlp_flop_x50p, arch_mlp_flop_x70p, arch_mlp_flop_x80p, arch_mlp_flop_x90p, \
-#     arch_mlp_by_scale
-#
-# model_dict = {
-#     # 'arch_mlp_flop_x10p': arch_mlp_flop_x10p,
-#     # 'arch_mlp_flop_x20p': arch_mlp_flop_x20p,
-#     # 'arch_mlp_flop_x30p': arch_mlp_flop_x30p,
-#     # 'arch_mlp_flop_x40p': arch_mlp_flop_x40p,
-#     # 'arch_mlp_flop_x50p': arch_mlp_flop_x50p,
-#     # 'arch_mlp_flop_x60p': arch_mlp_flop_x60p,
-#     # 'arch_mlp_flop_x70p': arch_mlp_flop_x70p,
-#     # 'arch_mlp_flop_x80p': arch_mlp_flop_x80p,
-#     # 'arch_mlp_flop_x90p': arch_mlp_flop_x90p,
-#     'arch_mlp_by_scale': arch_mlp_by_scale,
-# }
+from .super_net import make_super_net, super_net_x30p, super_net_x20p, super_net_x10p, super_net_x8p, super_net_x6p, \
+    super_net_x4p, super_net_x2p
+
+
+def make_model(model_name):
+    model_dict = {
+        'super_net': make_super_net,
+        'super_net_x30p': super_net_x30p,
+        'super_net_x20p': super_net_x20p,
+        'super_net_x10p': super_net_x10p,
+        'super_net_x8p': super_net_x8p,
+        'super_net_x6p': super_net_x6p,
+        'super_net_x4p': super_net_x4p,
+        'super_net_x2p': super_net_x2p,
+    }
+    return model_dict[model_name]()
