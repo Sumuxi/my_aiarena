@@ -2,47 +2,14 @@ import logging
 import os
 import time
 
+import numpy as np
 import torch
-from pythonjsonlogger.json import JsonFormatter
 from torch.utils.tensorboard import SummaryWriter
 
 from criterion import make_criterion_dict
 from datasets.hok_3v3 import FrameX1
 from helper.profile_util import torch_profile
 from models import make_model
-
-
-# 创建一个配置函数，生成不同的日志器
-def setup_logger(logger_name, log_file, level=logging.INFO):
-    """
-    设置日志器，用于记录 JSON 格式日志到不同文件。
-
-    Args:
-        logger_name (str): 日志器的名称。
-        log_file (str): 日志文件路径。
-        level (int): 日志级别。
-
-    Returns:
-        logger (logging.Logger): 配置好的日志器。
-    """
-    logger = logging.getLogger(logger_name)
-    logger.setLevel(level)
-
-    # 确保日志器没有继承根日志器的 handler
-    logger.propagate = False
-
-    # # 清除现有的 handler（如果存在）
-    # logger.handlers = []
-
-    # 创建文件 Handler
-    file_handler = logging.FileHandler(log_file)
-    formatter = JsonFormatter('%(asctime)s %(message)s')
-    file_handler.setFormatter(formatter)
-
-    # 添加 Handler 到日志器
-    if not logger.handlers:  # 避免重复添加 Handler
-        logger.addHandler(file_handler)
-    return logger
 
 
 def save_checkpoint(checkpoint_dir: str,
@@ -306,9 +273,7 @@ class Trainer:
     定义训练器
     """
 
-    def __init__(self,
-                 config
-                 ):
+    def __init__(self, config):
         self.config = config
         self.model = make_model(config.model)
         self.criterion = make_criterion_dict(config.kd_T)
@@ -321,9 +286,6 @@ class Trainer:
 
         self.logger = logging.getLogger(__name__)
         self.tb_logger = SummaryWriter(log_dir=self.config.log_dir, flush_secs=60)
-        self.metrics_logger = setup_logger('metrics', os.path.join(self.config.log_dir, 'metrics.json'))
-        self.train_logger = setup_logger('train', os.path.join(self.config.log_dir, 'train.json'))
-        self.eval_logger = setup_logger('eval', os.path.join(self.config.log_dir, 'eval.json'))
 
         self.start_time = None
         if torch.cuda.is_available():
@@ -550,14 +512,19 @@ class Trainer:
             loss_list = result_dict['loss_list']
             hero_loss_list = loss_list.sum(dim=1).numpy().tolist()
             action_loss_list = loss_list.sum(dim=0).numpy().tolist()
-            loss_list = loss_list.numpy().tolist()
 
             # accuracy
             # 3 heroes, 5 actions, 2 acc [top1_acc, top5_acc]
             acc_list = result_dict['acc_list']
             hero_acc_list = acc_list.mean(dim=1).numpy().tolist()
             action_acc_list = acc_list.mean(dim=0).numpy().tolist()
-            acc_list = acc_list.numpy().tolist()
+
+            np.savez_compressed(os.path.join(self.config.save_npz_log_dir, f"train-loss-acc_{total_step}.npz"),
+                                step=total_step,
+                                loss=loss_list.numpy(),
+                                acc=acc_list.numpy())
+            loss_list = loss_list.numpy().tolist()
+            # acc_list = acc_list.numpy().tolist()
 
             # metrics info
             elapsed_time = time.time() - self.start_time
@@ -566,32 +533,6 @@ class Trainer:
             generation_rate, consumption_rate = self.train_dataset.get_rate()
             pre_clip_total_norm = result_dict["pre_clip_total_norm"]
             post_clip_total_norm = result_dict["post_clip_total_norm"]
-
-            train_metrics = {
-                'step': total_step,
-
-                'avg_step_time': avg_step_time,
-                'generation_rate': generation_rate,
-                'consumption_rate': consumption_rate,
-                'pre_clip_total_norm': pre_clip_total_norm,
-                'post_clip_total_norm': post_clip_total_norm,
-            }
-
-            train_loss_acc = {
-                'step': total_step,
-
-                'hard_loss': hard_loss,
-                'kd_loss': kd_loss,
-                'hero_loss_list': hero_loss_list,
-                'action_loss_list': action_loss_list,
-                'loss_list': loss_list,
-
-                'hero_acc_list': hero_acc_list,
-                'action_acc_list': action_acc_list,
-                'acc_list': acc_list,
-            }
-            self.metrics_logger.info(train_metrics)
-            self.train_logger.info(train_loss_acc)
 
             # print log
             self.logger.info(('Step {step}\t'

@@ -59,7 +59,7 @@ def parse_option():
     parser.add_argument('--num_reader', type=int, default=2, help='num_reader')
     parser.add_argument('--max_steps', type=int, default=1000000, help='number of training steps')
     parser.add_argument('--log_freq', type=int, default=100, help='log frequency')
-    parser.add_argument('--save_model_freq', type=int, default=100, help='save frequency')
+    parser.add_argument('--save_model_freq', type=int, default=5000, help='save frequency')
 
     parser.add_argument('--train_data_dir', type=str, default='train_frames',  help='train dataset dir')
     parser.add_argument('--valid_data_dir', type=str, default='valid_frames',  help='valid dataset dir')
@@ -118,9 +118,11 @@ def main():
     opt.project_dir = project_dir
     trial_save_dir = os.path.join(project_dir, "output", opt.trial)
     opt.save_model_dir = os.path.join(trial_save_dir, "ckpt")
+    opt.save_npz_log_dir = os.path.join(trial_save_dir, "npz_logs")
     opt.log_dir = os.path.join(trial_save_dir, "logs")
 
     os.makedirs(opt.save_model_dir, exist_ok=True)
+    os.makedirs(opt.save_npz_log_dir, exist_ok=True)
     os.makedirs(opt.log_dir, exist_ok=True)
 
 
