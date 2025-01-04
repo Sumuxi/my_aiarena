@@ -34,7 +34,7 @@ def make_mlp_layer(feature_dims: Sequence[int] = None,
     return fc_layers
 
 
-def make_action_heads(action_dims: Sequence[int] = None, feature_dims: Sequence[int] = None):
+def make_action_heads(feature_dims: Sequence[int] = None, action_dims: Sequence[int] = None):
     action_heads = nn.ModuleList()
     for action_dim in action_dims:
         action_heads.append(
