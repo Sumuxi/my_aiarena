@@ -1,30 +1,68 @@
 import argparse
 import logging
 import os
+import random
 
-from torch import nn
+import numpy as np
+import torch
 
-from data.dataset import HoK3v3Dataset
-from loss_fn import DistillKL
 from trainer.trainer import Trainer
+
+
+def set_seed(seed: int = 56, deterministic: bool = True):
+    """
+    设置随机种子以确保结果可复现。
+
+    Args:
+        seed (int): 随机种子值。
+        deterministic (bool): 是否启用确定性算法，默认为 True。
+    """
+    # 固定 Python 内置的随机数生成器种子
+    random.seed(seed)
+
+    # 固定 NumPy 随机数生成器种子
+    np.random.seed(seed)
+
+    # 固定 PyTorch 随机数生成器种子（CPU）
+    torch.manual_seed(seed)
+
+    # 如果有 GPU，可固定其随机数生成器种子
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # 所有 GPU 使用相同的种子
+
+    # 是否启用确定性算法
+    # if deterministic:
+    #     # 强制 PyTorch 使用确定性算法
+    #     torch.use_deterministic_algorithms(True)
+    #
+    #     # 设置 CuDNN 为确定性模式
+    #     torch.backends.cudnn.deterministic = True
+    #     torch.backends.cudnn.benchmark = False
+    #
+    #     # 配置 CUBLAS 确定性（对于 CUDA >= 10.2）
+    #     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+    #
+    # print(f"Random seed set to {seed} and deterministic behavior {'enabled' if deterministic else 'disabled'}.")
 
 
 def parse_option():
     # hostname = socket.gethostname()
     parser = argparse.ArgumentParser('argument for training')
 
+    parser.add_argument('--seed', type=int, default=56, help='local_rank')
+
+    parser.add_argument('--model', type=str, default='super_net_x10p',  help='model name')
     parser.add_argument('--local_rank', type=int, default=0, help='local_rank')
     parser.add_argument('--batch_size', type=int, default=256, help='batch_size')
-    parser.add_argument('--num_prefetch_worker', type=int, default=8, help='num_prefetch_worker')
-    # parser.add_argument('--prefetch_factor', type=int, default=10, help='prefetch_factor')
-    # parser.add_argument('--epochs', type=int, default=240, help='number of training epochs')
+    parser.add_argument('--batch_queue_size', type=int, default=50, help='batch_queue_size')
+    parser.add_argument('--num_reader', type=int, default=2, help='num_reader')
     parser.add_argument('--max_steps', type=int, default=1000000, help='number of training steps')
-    parser.add_argument('--print_freq', type=int, default=100, help='print frequency')
-    parser.add_argument('--tb_log_freq', type=int, default=100, help='tensorboard log frequency')
-    parser.add_argument('--save_model_freq', type=int, default=10000, help='save frequency')
+    parser.add_argument('--log_freq', type=int, default=100, help='log frequency')
+    parser.add_argument('--save_model_freq', type=int, default=100, help='save frequency')
 
-    parser.add_argument('--data_dir', type=str, default='train_with_logits',
-                        choices=['train_with_logits', 'train_frames'], help='dataset dir')
+    parser.add_argument('--train_data_dir', type=str, default='train_frames',  help='train dataset dir')
+    parser.add_argument('--valid_data_dir', type=str, default='valid_frames',  help='valid dataset dir')
 
     # model init
     parser.add_argument('--use_init_model', type=int, default=0, help='whether to load the model for initialization')
@@ -67,13 +105,17 @@ def main():
         datefmt="%Y-%m-%d %H:%M:%S",
         level=logging.INFO,
     )
+    logger = logging.getLogger(__name__)
 
     opt = parse_option()
+    set_seed(opt.seed)
 
     cwd = os.getcwd()
-    logging.info(f"work dir: {cwd}")
+    logger.info(f"work dir: {cwd}")
+    project_dir = ''
     if 'my_aiarena' in cwd:
         project_dir = os.path.join(cwd.split('my_aiarena')[0], "my_aiarena")
+    opt.project_dir = project_dir
     trial_save_dir = os.path.join(project_dir, "output", opt.trial)
     opt.save_model_dir = os.path.join(trial_save_dir, "ckpt")
     opt.log_dir = os.path.join(trial_save_dir, "logs")
@@ -81,32 +123,12 @@ def main():
     os.makedirs(opt.save_model_dir, exist_ok=True)
     os.makedirs(opt.log_dir, exist_ok=True)
 
-    dataset_dir = os.path.join(project_dir, "dataset", opt.data_dir)
-    logging.info(f"dataset dir: {dataset_dir}")
-    train_dataset = HoK3v3Dataset(root_dir=dataset_dir,
-                                  batch_size=opt.batch_size,
-                                  sampling='random',
-                                  sample_repeat_rate=1,
-                                  chunk_size=10,
-                                  batch_queue_size=20,
-                                  npz_queue_size=10,
-                                  num_sampler=2,
-                                  num_reader=2
-                                  )
-    test_dataset = None
 
-    from models.final_v1 import NetworkModel
-    model = NetworkModel()
 
-    criterion_dict = nn.ModuleDict({})
-    criterion_dict['cls'] = nn.CrossEntropyLoss()
-    criterion_dict['kd'] = DistillKL(opt.kd_T)
+    opt.train_data_dir = os.path.join(project_dir, "dataset", opt.train_data_dir)
+    opt.valid_data_dir = os.path.join(project_dir, "dataset", opt.valid_data_dir)
 
-    trainer = Trainer(model,
-                      criterion_dict,
-                      train_dataset,
-                      test_dataset,
-                      opt)
+    trainer = Trainer(opt)
     trainer.run()
 
 
